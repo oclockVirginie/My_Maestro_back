@@ -1,0 +1,273 @@
+import { User, Projet, Company, Preview, Genre } from "../models/index.js";
+import bcrypt from "bcryptjs";
+import dotenv from "dotenv";
+import jwt from "jsonwebtoken";
+
+dotenv.config();
+const JWT_SECRET = process.env.JWT_SECRET;
+
+const userController = {
+    // Créer un nouvel utilisateur
+    create: async (req, res) => {
+        console.log(req.body);
+        try {
+            const userDatas = req.body;
+            const { email, password } =
+                userDatas;
+
+            const passwordHashed = await bcrypt.hash(password, 10);
+            console.log(userDatas);
+            console.log(passwordHashed);
+
+            await User.create({
+                email,
+                password: passwordHashed,
+            });
+            res.status(201).json({
+                status: 201,
+                message: "User successfully created",
+            });
+        } catch (error) {
+            console.error(
+                "Erreur lors de la création de l'utilisateur : ",
+                error
+            );
+            res.status(500).json({ error: "Erreur interne du serveur" });
+        }
+    },
+
+    // Connexion
+    login: async (req, res) => {
+        console.log(req.body);
+        try {
+            const loginDatas = req.body;
+            const { email, password } = loginDatas;
+
+            const user = await User.findOne({ where: { email } });
+            if (!user) {
+                return res.status(401).json({
+                    status: 401,
+                    message: "L'email et/ou le mot de passe sont incorrects",
+                });
+            }
+
+            const isMatching = await bcrypt.compare(password, user.password);
+            if (!isMatching) {
+                return res.status(401).json({
+                    status: 401,
+                    message: "L'email et/ou le mot de passe sont incorrects",
+                });
+            }
+
+            const accessToken = jwt.sign(
+                { id: user.id, role: user.role },
+                JWT_SECRET,
+                { expiresIn: "1h" }
+            );
+
+            // Création du refresh token (7 jours)
+            const refreshToken = jwt.sign(
+                { id: user.id, email: user.email },
+                process.env.REFRESH_SECRET,
+                { expiresIn: "7d" }
+            );
+
+            // Envoi du cookie access_token
+            res.cookie("access_token", accessToken, {
+                httpOnly: true, //  à true, il devient impossible d’y accéder depuis JS (front)
+                secure: false, //  Mettre true en production avec HTTPS
+                sameSite: "Strict", // Protège contre certaines attaques CSRF
+                maxAge: 60 * 60 * 1000, // 1 heure en millisecondes
+            });
+
+            // Envoi du cookie refresh_token
+            res.cookie("refresh_token", refreshToken, {
+                httpOnly: true,
+                secure: false,
+                sameSite: "Strict",
+                maxAge: 7 * 24 * 60 * 60 * 1000, // 7 jours
+            });
+
+            //  On renvoie les infos du user au frontend (sans mot de passe)
+            res.json({
+                message: "Connexion réussie",
+                user: {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    role: user.role, // à vérifier
+                },
+            });
+        } catch (error) {
+            console.error("Erreur lors de l'authentification: ", error);
+            res.status(401).json({ error: "Unauthorized" });
+        }
+    },
+
+    refresh: async (req, res) => {
+        const refreshToken = req.cookies.refresh_token;
+        if (!refreshToken) {
+            return res.status(401).json({ message: "Pas de refresh token" });
+        }
+        try {
+            const decoded = jwt.verify(
+                refreshToken,
+                process.env.REFRESH_SECRET
+            );
+            const newAccessToken = jwt.sign(
+                { id: decoded.id, email: decoded.email },
+                process.env.JWT_SECRET,
+                { expiresIn: "1h" }
+            );
+            // Réécriture du cookie access_token
+            res.cookie("access_token", newAccessToken, {
+                httpOnly: true,
+                secure: false,
+                sameSite: "Strict",
+                maxAge: 60 * 60 * 1000,
+            });
+            res.json({ message: "Nouveau token généré 🔄" });
+        } catch {
+            res.status(403).json({
+                message: "Refresh token invalide ou expiré",
+            });
+        }
+    },
+
+    // Se déconnecter
+    logout: async (req, res) => {
+        res.clearCookie("access_token");
+        res.clearCookie("refresh_token");
+        res.json({ message: "Déconnexion effectuée" });
+    },
+
+    profile: async (req, res) => {
+        try {
+            //  Récupère l'utilisateur depuis la DB via son id dans le token
+            const user = await User.findByPk(req.user.id);
+            if (!user) {
+                return res
+                    .status(404)
+                    .json({ message: "Utilisateur introuvable" });
+            }
+            return res.json({
+                message: "Profil récupéré",
+                user: { id: user.id, name: user.name, email: user.email },
+            });
+        } catch (error) {
+            console.error(
+                "Erreur lors de la recupération des informations de l'utilisateur : ",
+                error
+            );
+            res.status(500).json({ error: "Erreur interne du serveur" });
+        }
+    },
+
+    // Modifier les informations de l'utilisateur
+    modify: async (req, res) => {
+        console.log(req.body);
+
+        try {
+            const user = await User.findByPk(req.user.id);
+            if (!user) {
+                return res
+                    .status(404)
+                    .json({ message: "Utilisateur introuvable" });
+            }
+
+            const modifiedDatas = req.body;
+            const { lastname, firstname, phonenumber, email, password } =
+                modifiedDatas;
+
+            const passwordHashed = await bcrypt.hash(password, 10);
+
+            await user.update({
+                lastname,
+                firstname,
+                phonenumber,
+                email,
+                password: passwordHashed,
+            });
+            res.status(200).json({
+                status: 200,
+                message: "Information successfully modified",
+            });
+        } catch (error) {
+            console.error(
+                "Erreur lors de la modification des informations de l'utilisateur : ",
+                error
+            );
+            res.status(500).json({ error: "Erreur interne du serveur" });
+        }
+    },
+
+    // Supprimer un utilisateur (désactiver)
+    // DELETE/api/user/:idUser
+    // userRoute.delete('/user/:idUser', userController.quelque chose)
+
+    // Voir la liste des utilisateurs
+    findAll: async (req, res) => {
+        try {
+            const users = await User.findAll();
+            if (users.length > 0) {
+                res.json(users);
+            } else {
+                res.status(404).json({ message: "Aucun utilisateur trouvé" });
+            }
+        } catch (error) {
+            console.error(
+                "Erreur lors de la recherche des utilisateurs",
+                error
+            );
+            res.status(500).json({ error: "Erreur interne du serveur" });
+        }
+    },
+
+    // Voir un seul utilisateur
+    findByPk: async (req, res) => {
+        try {
+            const user = await User.findByPk(req.params.idUser);
+            if (user) {
+                res.json(user());
+            } else {
+                return res.status(401).json({
+                    status: 401,
+                    message: "Aucun utilisateur trouvé",
+                });
+            }
+        } catch (error) {
+            console.error(
+                "Erreur lors de la recherche d'un utilisateur",
+                error
+            );
+            res.status(500).json({ error: "Erreur interne du serveur" });
+        }
+    },
+
+    // Trier les utilisateurs
+    sort: async (req, res) => {
+        try {
+            const { lastnameSelected, firstnameSelected } = req.query;
+            if (lastnameSelected) {
+                const usersSorted = await User.findAll({
+                    order: [["lastname", "DESC"]],
+                });
+                res.json(usersSorted);
+            }
+            if (firstnameSelected) {
+                const usersSorted = await User.findAll({
+                    order: [["firstname", "DESC"]],
+                });
+                res.json(usersSorted);
+            }
+        } catch (error) {
+            console.error(
+                "Erreur lors de la recherche des utilisateurs",
+                error
+            );
+            res.status(500).json({ error: "Erreur interne du serveur" });
+        }
+    },
+};
+
+export default userController;
