@@ -7,7 +7,7 @@
         "node": "22.x"
     },
     "scripts": {
-        "start": "node api/index.js",
+        "start": "node index.js",
         "dev": "node --watch index",
         "seed": "node app/db/seeding",
         "postinstall": "npm install pg pg-hstore"
